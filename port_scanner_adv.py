@@ -79,9 +79,15 @@ async def Producer():
 async def Worker(ip):
     while True:
         port = await queue.get()
+
+        if port is None:
+            queue.task_done()
+            break
+
         result = await scan_port(ip, port)
         if result is not None:
             open_ports.append(result)
+
         queue.task_done()
 
 
@@ -93,10 +99,14 @@ async def main():
 
     await Producer()
     workers = []
-    for work in range(1000):
+    worker_count = 1000
+    for work in range(worker_count):
         workers.append(asyncio.create_task(Worker(ip)))
 
     await queue.join()
+    for work in range(worker_count):
+        await queue.put(None)
+    await asyncio.gather(*workers)
     end_time = time.time()
     scan_time = round(end_time - start_time, 2)
 
