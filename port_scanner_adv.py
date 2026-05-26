@@ -44,19 +44,21 @@ except ValueError:
     exit()
 
 
+semaphore = asyncio.Semaphore(20)
+
+
 async def scan_port(ip, port):
-
     try:
+        async with semaphore:
 
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(ip, port), timeout=1
-        )
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(ip, port), timeout=1
+            )
 
-        writer.close()
+            writer.close()
 
-        await writer.wait_closed()
-
-        return port
+            await writer.wait_closed()
+            return port
 
     except:
         return None
