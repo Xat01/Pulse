@@ -13,6 +13,9 @@ args = parser.parse_args()
 host = args.host
 port_range = args.ports
 
+open_ports = []
+queue = asyncio.Queue()
+
 
 def host_resolver(host):
 
@@ -44,7 +47,7 @@ except ValueError:
     exit()
 
 
-semaphore = asyncio.Semaphore(20)
+semaphore = asyncio.Semaphore(5000)
 
 
 async def scan_port(ip, port):
@@ -60,31 +63,41 @@ async def scan_port(ip, port):
             await writer.wait_closed()
             return port
 
-    except:
+    except asyncio.TimeoutError:
+        return None
+    except ConnectionRefusedError:
+        return None
+    except OSError:
         return None
 
 
+async def Producer():
+    for port in range(start_port, end_port + 1):
+        await queue.put(port)
+
+
+async def Worker(ip):
+    while True:
+        port = await queue.get()
+        result = await scan_port(ip, port)
+        if result is not None:
+            open_ports.append(result)
+        queue.task_done()
+
+
 async def main():
-
     ip = host_resolver(host)
-
     if ip is None:
         return
-
     start_time = time.time()
 
-    tasks = []
+    await Producer()
+    workers = []
+    for work in range(1000):
+        workers.append(asyncio.create_task(Worker(ip)))
 
-    for port in range(start_port, end_port + 1):
-
-        tasks.append(scan_port(ip, port))
-
-    results = await asyncio.gather(*tasks)
-
-    open_ports = [port for port in results if port is not None]
-
+    await queue.join()
     end_time = time.time()
-
     scan_time = round(end_time - start_time, 2)
 
     print("\nTarget Information")
