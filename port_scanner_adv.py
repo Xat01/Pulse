@@ -1,9 +1,10 @@
-from concurrent.futures import ThreadPoolExecutor
 import socket
 import time
 import argparse
+import asyncio
 
 parser = argparse.ArgumentParser()
+
 parser.add_argument("host")
 parser.add_argument("ports")
 
@@ -14,15 +15,17 @@ port_range = args.ports
 
 
 def host_resolver(host):
+
     try:
-        ip = socket.gethostbyname(host)
-        return ip
+        return socket.gethostbyname(host)
 
     except socket.gaierror:
         print("Invalid or Unknown Hostname.")
+        return None
 
 
 try:
+
     start_port, end_port = port_range.split("-")
 
     start_port = int(start_port)
@@ -33,7 +36,7 @@ try:
         exit()
 
     if start_port > end_port:
-        print("Invalid startPort!")
+        print("Invalid Port Range.")
         exit()
 
 except ValueError:
@@ -41,136 +44,64 @@ except ValueError:
     exit()
 
 
-open_ports = []
-
-common_ports = {80: "HTTP", 21: "FTP", 22: "SSH", 443: "HTTPS"}
-
-
-def http_probe(sock, port):
-
-    if port == 80:
-
-        request = (
-            "GET / HTTP/1.1\r\n" f"Host: {host}\r\n" "Connection: close\r\n" "\r\n",
-            "GET / HTTPS/1.1\r\n" f"Host: {host}\r\n" "Connection: close\r\n",
-        )
-
-        request_bytes = request.encode()
-
-        sock.sendall(request_bytes)
-
-        response_data = b""
-
-        try:
-
-            while True:
-
-                data = sock.recv(1024)
-
-                if not data:
-                    break
-
-                response_data += data
-
-        except socket.timeout:
-            pass
-
-        response_text = response_data.decode(errors="ignore")
-
-        banner = response_text.split("\r\n")[0]
-
-        return banner
-
-    return "No HTTP Response"
-
-
-def scan_port(ip, port):
+async def scan_port(ip, port):
 
     try:
 
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(ip, port), timeout=1
+        )
 
-            sock.settimeout(1)
+        writer.close()
 
-            result = sock.connect_ex((ip, port))
+        await writer.wait_closed()
 
-            if result == 0:
+        return port
 
-                service = common_ports.get(port, "Unknown Service")
-
-                banner = "No Banner"
-
-                if port == 80:
-
-                    banner = http_probe(sock, port)
-
-                else:
-
-                    try:
-
-                        banner_data = sock.recv(1024)
-
-                        banner = banner_data.decode(errors="ignore").strip()
-
-                        if not banner:
-                            banner = "No Banner"
-
-                    except socket.timeout:
-                        banner = "No Banner"
-
-                open_ports.append((port, service, banner))
-
-            else:
-                return None
-
-    except socket.error:
-        pass
+    except:
+        return None
 
 
-start_time = time.time()
+async def main():
 
-ip = host_resolver(host)
+    ip = host_resolver(host)
 
-if ip is not None:
+    if ip is None:
+        return
 
-    with ThreadPoolExecutor(max_workers=100) as executor:
+    start_time = time.time()
 
-        for port in range(start_port, end_port + 1):
+    tasks = []
 
-            executor.submit(scan_port, ip, port)
+    for port in range(start_port, end_port + 1):
 
-end_time = time.time()
+        tasks.append(scan_port(ip, port))
 
+    results = await asyncio.gather(*tasks)
 
-scan_time = round(end_time - start_time, 2)
+    open_ports = [port for port in results if port is not None]
 
+    end_time = time.time()
 
-def display_result(ip, open_ports, scan_time):
+    scan_time = round(end_time - start_time, 2)
 
-    print("Target Information:")
+    print("\nTarget Information")
     print("-" * 20)
 
-    print(f"Resolved IP: {ip}\n")
+    print(f"Resolved IP: {ip}")
 
-    print("Results")
+    print("\nResults")
     print("-" * 20)
 
-    open_ports.sort()
+    for port in open_ports:
 
-    for port, service, banner in open_ports:
+        print(f"[+] Port {port} is open")
 
-        print(f"[+] Port: {port} Open")
-        print(f"    Service: {service}")
-        print(f"    Banner: {banner}")
-        print("-" * 40)
-
-    print()
-
-    print("Summary")
+    print("\nSummary")
     print("-" * 20)
 
     print(f"Open Ports Found: {len(open_ports)}")
     print(f"Scan Completed In {scan_time} sec")
 
 
-display_result(ip, open_ports, scan_time)
+asyncio.run(main())
