@@ -2,11 +2,23 @@ import socket
 import time
 import argparse
 import asyncio
+from colorama import Fore, Style, init
 
-parser = argparse.ArgumentParser()
+init(autoreset=True)
+
+parser = argparse.ArgumentParser(
+    description="Async port Scanner with verbosity control"
+)
 
 parser.add_argument("host")
 parser.add_argument("ports")
+parser.add_argument(
+    "-v",
+    "--verbose",
+    action="count",
+    default=0,
+    help="Increase verbosity by pressing(-v, -vv, -vvv)",
+)
 
 args = parser.parse_args()
 
@@ -15,6 +27,13 @@ port_range = args.ports
 
 open_ports = []
 queue = asyncio.Queue()
+
+verbose = args.verbose
+
+
+def log(msg, level=1, color=Fore.WHITE):
+    if verbose >= level:
+        print(color + msg + Style.RESET_ALL)
 
 
 def host_resolver(host):
@@ -64,7 +83,7 @@ async def scan_port(ip, port):
             return port
 
     except asyncio.TimeoutError:
-        return None
+        log(f"Debug: timeout at port{port}", level=3, color=Fore.RED)
     except ConnectionRefusedError:
         return None
     except OSError:
@@ -86,6 +105,7 @@ async def Worker(ip):
 
         result = await scan_port(ip, port)
         if result is not None:
+            log(f"Trying Port{port}", level=2, color=Fore.LIGHTCYAN_EX)
             open_ports.append(result)
 
         queue.task_done()
@@ -93,6 +113,12 @@ async def Worker(ip):
 
 async def main():
     ip = host_resolver(host)
+    log(
+        f"Starting scan on {host} ports {start_port} - {end_port}",
+        level=1,
+        color=Fore.CYAN,
+    )
+
     if ip is None:
         return
     start_time = time.time()
