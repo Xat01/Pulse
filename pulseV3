@@ -1,0 +1,202 @@
+import socket
+import time
+import argparse
+import asyncio
+import ssl
+from colorama import Fore, Style, init
+
+init(autoreset=True)
+
+banners = {}
+verbose = 0
+open_ports = []
+queue = asyncio.Queue()
+semaphore = asyncio.Semaphore(500)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Async port Scanner with verbosity control"
+    )
+    parser.add_argument("host")
+    parser.add_argument("ports")
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="Increase verbosity by pressing(-v, -vv, -vvv)",
+    )
+    parser.add_argument(
+        "-sV", "--banner", action="store_true", help="Grab service banners"
+    )
+    return parser.parse_args()
+
+
+def log(msg, level=1, color=Fore.WHITE):
+    if verbose >= level:
+        print(color + msg + Style.RESET_ALL)
+
+
+def host_resolver(host):
+
+    try:
+        return socket.gethostbyname(host)
+
+    except socket.gaierror:
+        print("Invalid or Unknown Hostname.")
+        return None
+
+
+def parse_ports(port_range):
+    try:
+        start_port, end_port = port_range.split("-")
+        start_port = int(start_port)
+        end_port = int(end_port)
+
+        if start_port < 0 or end_port > 65535:
+            print("Ports must be between 0 and 65535.")
+            exit()
+
+        if start_port > end_port:
+            print("Invalid Port Range.")
+            exit()
+        return start_port, end_port
+
+    except ValueError:
+        print("Invalid Port Range Format.", color=Fore.RED)
+        exit()
+
+
+async def scan_port(ip, port):
+    try:
+        async with semaphore:
+
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(ip, port), timeout=1
+            )
+
+            writer.close()
+
+            await writer.wait_closed()
+            return port
+
+    except asyncio.TimeoutError:
+        log(f"Debug: timeout at port{port}", level=3, color=Fore.RED)
+    except ConnectionRefusedError:
+        return None
+    except OSError:
+        return None
+
+
+async def banner_grabbing(host, port):
+    try:
+        if port == 443:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port, ssl=True), timeout=2
+            )
+        else:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port), timeout=2
+            )
+
+        if port in (80, 443, 8080):
+            request = f"HEAD / HTTP/1.1 \r\n" f"Host: {host}\r\n" f"\r\n"
+            writer.write(request.encode())
+            await writer.drain()
+
+        data = await asyncio.wait_for(reader.read(1024), timeout=2)
+
+        writer.close()
+        return data.decode(errors="ignore").strip()
+    except Exception as e:
+        return f"Banner Grabbing failed: {e}"
+
+
+async def Producer(start_port, end_port):
+    for port in range(start_port, end_port + 1):
+        await queue.put(port)
+
+
+async def Worker(ip, host, args):
+    while True:
+        try:
+            port = await queue.get()
+
+            if port is None:
+                queue.task_done()
+                break
+            log(f"Trying Port {port}", level=2, color=Fore.LIGHTCYAN_EX)
+
+            result = await scan_port(ip, port)
+            if result is not None:
+                open_ports.append(result)
+                log(f"[OPEN] Port {port} is open", level=1, color=Fore.GREEN)
+
+            if args.banner:
+                banner = await banner_grabbing(host, port)
+                banner_lines = banner.splitlines()
+                short_banner = banner_lines[0] if banner_lines else "No banner"
+                banners[port] = short_banner
+
+                log(f"      Banner: {short_banner}", level=1, color=Fore.MAGENTA)
+            queue.task_done()
+
+        except Exception as e:
+            print(f"WORKER CRASHED : {e}")
+
+            queue.task_done()
+
+
+async def main():
+    global verbose
+    args = parse_args()
+    host = args.host
+    port_range = args.ports
+    verbose = args.verbose
+    ip = host_resolver(host)
+
+    if ip is None:
+        return
+    log(f"[INFO] Starting scan on {host} ({ip})", level=1, color=Fore.CYAN)
+    start_time = time.time()
+    start_port, end_port = parse_ports(args.ports)
+    await Producer(start_port, end_port)
+
+    workers = []
+
+    worker_count = 1000
+    for work in range(worker_count):
+        workers.append(asyncio.create_task(Worker(ip, host, args)))
+
+    await queue.join()
+    for work in range(worker_count):
+        await queue.put(None)
+    await asyncio.gather(*workers)
+    end_time = time.time()
+    scan_time = round(end_time - start_time, 2)
+
+    print("\nTarget Information")
+    print("-" * 25)
+    print(f"Host: {host}")
+    print(f"Resolved IP: {ip}")
+
+    print("\nResults")
+    print("-" * 25)
+    if open_ports:
+        for port in open_ports:
+            print(f"[+] Port {port} is open" + Fore.GREEN)
+            if port in banners:
+                print(Fore.MAGENTA + f"     Banner:{banners[port]}")
+    else:
+        print(Fore.RED + "No Open Ports Found.")
+
+    print("\nSummary")
+    print("-" * 25)
+
+    print(f"Open Ports Found: {len(open_ports)}")
+    print(f"Scan Completed In {scan_time} sec")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
